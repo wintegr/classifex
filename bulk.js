@@ -1,7 +1,7 @@
       // ==UserScript==
-      // @name         OLX & Public24 → Google Sheets (Bulk)
+      // @name         OLX & publi24 → Google Sheets (Bulk)
       // @match        *://*.olx.ro/*
-      // @match        *://*.public24.ro/*
+      // @match        *://*.publi24.ro/*
       // @grant        GM_xmlhttpRequest
       // @grant        GM_notification
       // @grant        GM_setValue
@@ -56,7 +56,7 @@
         detailPhoneBtn: '[data-cy="phone-button"], [data-testid="show-phone"]',
         detailPhone: '[data-cy="phone-number"], [data-testid="phone-number"]',
       };
-      /* ---------- PUBLIC24 SELECTORS ---------- */
+      /* ---------- publi24 SELECTORS ---------- */
       const P24 = {
         cards: '.ad-item, .listing-item, .item-ad, article.ad',
         cardTitle: '.ad-title, h3 a, h2 a, [itemprop="name"]',
@@ -74,7 +74,7 @@
       /* ---------- DETECT SITE ---------- */
       function getSite() {
         if (location.hostname.includes('olx.ro')) return {site: 'OLX', sel: OLX};
-        if (location.hostname.includes('public24.ro')) return {site: 'PUBLIC24', sel: P24};
+        if (location.hostname.includes('publi24.ro')) return {site: 'publi24', sel: P24};
         return null;
       }
       /* ---------- EXTRACT FROM CARD (search page) ---------- */
