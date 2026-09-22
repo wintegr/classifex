@@ -1,0 +1,40 @@
+      // Google Apps Script - Code.gs
+      const SHEET_ID = 'YOUR_SHEET_ID_HERE';  // Replace with your Sheet ID
+      const SHEET_NAME = 'Listings';
+      function doPost(e) {
+        try {
+          const data = JSON.parse(e.postData.contents);
+          const ss = SpreadsheetApp.openById(SHEET_ID);
+          let sheet = ss.getSheetByName(SHEET_NAME);
+
+          if (!sheet) {
+            sheet = ss.insertSheet(SHEET_NAME);
+            // Headers
+            sheet.appendRow([
+              'Date Added', 'Source', 'Item URL', 'Title', 'Price', 'Negotiable',
+              'Seller Name', 'Seller URL', 'Phone', 'Raw Data'
+            ]);
+            sheet.setFrozenRows(1);
+          }
+
+          sheet.appendRow([
+            new Date(),
+            data.source,
+            data.url,
+            data.title,
+            data.price,
+            data.negotiable ? 'DA' : 'NU',
+            data.sellerName,
+            data.sellerUrl,
+            data.phone,
+            JSON.stringify(data)
+          ]);
+
+          return ContentService.createTextOutput(JSON.stringify({ok: true}))
+            .setMimeType(ContentService.MimeType.JSON);
+
+        } catch (err) {
+          return ContentService.createTextOutput(JSON.stringify({ok: false, error: err.toString()}))
+            .setMimeType(ContentService.MimeType.JSON);
+        }
+      }
