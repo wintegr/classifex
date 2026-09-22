@@ -1,7 +1,7 @@
       // ==UserScript==
-      // @name         OLX & Public24 → Google Sheets
+      // @name         OLX & publi24 → Google Sheets
       // @match        *://*.olx.ro/d/anunt/*
-      // @match        *://*.public24.ro/anunt/*
+      // @match        *://*.publi24.ro/anunt/*
       // @grant        GM_xmlhttpRequest
       // @grant        GM_notification
       // @connect      script.google.com
@@ -60,8 +60,8 @@
 
         return {source: 'OLX', url, title, price, negotiable, sellerName, sellerUrl, phone};
       }
-      /* ---------- PUBLIC24.RO EXTRACTOR ---------- */
-      async function extractPublic24() {
+      /* ---------- publi24.RO EXTRACTOR ---------- */
+      async function extractpubli24() {
         await sleep(1500);
 
         const url = location.href;
@@ -86,7 +86,7 @@
           phone = clean(phoneEl?.innerText);
         }
 
-        return {source: 'PUBLIC24', url, title, price, negotiable, sellerName, sellerUrl, phone};
+        return {source: 'publi24', url, title, price, negotiable, sellerName, sellerUrl, phone};
       }
       /* ---------- UI: FLOATING BUTTON ---------- */
       function addButton() {
@@ -115,7 +115,7 @@
         try {
           let data;
           if (location.hostname.includes('olx.ro')) data = await extractOlx();
-          else if (location.hostname.includes('public24.ro')) data = await extractPublic24();
+          else if (location.hostname.includes('publi24.ro')) data = await extractpubli24();
           else throw new Error('Unsupported site');
 
           const res = await sendToSheets(data);
@@ -135,7 +135,7 @@
         btn.disabled = false;
       }
       /* ---------- INIT ---------- */
-      if (location.hostname.includes('olx.ro') || location.hostname.includes('public24.ro')) {
+      if (location.hostname.includes('olx.ro') || location.hostname.includes('publi24.ro')) {
         // Wait for page load
         if (document.readyState === 'loading') {
           document.addEventListener('DOMContentLoaded', addButton);
