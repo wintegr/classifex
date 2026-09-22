@@ -1,10 +1,40 @@
-bility
+# classifex
+combination userscript google apps script to extract info and write it to google sheet
+
+## Rationale
+
+I wanted to create a google sheet containing the results of searching for a particular item on a couple of websites such as olx.ro and public24.ro; this should include the URL of each item, the name of the seller, the phone number, the price, whether it is negotiable, the seller URL
+
+    Why GAS alone Can't Do This
+
+    Google Apps Script runs on Google's servers, not in your browser. It has zero access to:
+
+    • Your open tabs
+    • Your browser's DOM
+    • Your cookies/auth sessions
+    • JavaScript-rendered content
+
+    _UrlFetchApp_ makes bare HTTP requests from Google's IP ranges — which olx.ro and public24.ro will block (Cloudflare, bot detection, JS-rendered
+    listings, phone numbers behind auth/AJAX).
+
+    What works: browser extension, local script + Playwright and Userscript (in Tampermonkey extension) + GAS. I chose the latter. It injects "Export to Sheet" buttons on listing pages, POSTs to a Google Apps Script Web App endpoint (which can write to your Sheet).
+
+    Reality Check for olx.ro / public24.ro
+
+      Field                    Feasibility
+      
       ───────────────────────  ────────────────────────────────────────────────────────────────
+      
       URL, title, price        ✅ Easy (in DOM)
+      
       Negotiable               ✅ Text check
+      
       Seller name/profile URL  ✅ In DOM
+      
       Phone number             ⚠️  Hard — requires click + AJAX, often login-gated, rate-limited
+      
       Anti-bot                 Both use Cloudflare + behavioral detection
+      
 
     Phone numbers are the blocker. olx.ro shows them only after "Arată numărul" click (AJAX, requires session). public24.ro similar.
 
