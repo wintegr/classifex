@@ -49,9 +49,13 @@
 
   /* ============================================================
    * SITE DEFINITIONS
-   * If a field comes back empty in your Sheet, open DevTools on
-   * that page, find the right element, and update ONLY the
-   * selector string below — nothing else needs to change.
+   * Detail-page extraction (title/price/seller/phone) is handled
+   * generically below via structure/text, not per-site class
+   * names — both sites' exact markup is hard to pin down from
+   * outside a real browser (OLX actively blocks bot fetches).
+   * Only the BULK/search-page card selectors are still per-site
+   * guesses; if bulk export comes back empty, that's the part to
+   * fix (see cards/cardUrl below).
    * ==========================================================*/
   const SITES = {
     olx: {
@@ -60,36 +64,78 @@
       // OLX moved from /d/anunt/ to /d/oferta/ — accept both.
       isDetailPath: (path) => /\/d\/(oferta|anunt)\//.test(path),
       cards: '[data-cy="l-card"], [data-testid="l-card"]',
-      cardTitle: '[data-cy="ad-card-title"] h4, h6, [data-cy="ad-title"]',
-      cardPrice: '[data-testid="ad-price"], [data-cy="ad-price"]',
       cardUrl: 'a[href*="/d/oferta/"], a[href*="/d/anunt/"]',
-      cardSeller: '[data-cy="seller-name"], [data-testid="seller-name"]',
-      cardSellerUrl: 'a[href*="/o/anunturi-de-la/"], a[href*="/user/"]',
-      detailTitle: 'h4[data-cy="ad_title"], h1[data-testid="ad-title"], [data-cy="ad_title"]',
-      detailPrice: '[data-testid="ad-price"], [data-cy="ad-price"]',
-      detailSellerName: '[data-cy="seller_name"], [data-cy="seller-name"], [data-testid="seller-name"]',
-      detailSellerUrl: 'a[href*="/o/anunturi-de-la/"], a[href*="/user/"]',
-      detailPhoneBtn: '[data-testid="show-phone"], button[data-cy="show-phone"]',
-      detailPhone: '[data-testid="phone-number"], a[href^="tel:"]',
     },
     publi24: {
       name: 'PUBLI24',
       test: (h) => h.includes('publi24.ro'),
       isDetailPath: (path) => /\/anunt\//.test(path) || /-\d+\.html?$/.test(path),
       cards: '.ad-item, .listing-item, article.ad, li.EntityList-item',
-      cardTitle: '.ad-title, h3 a, h2 a, [itemprop="name"]',
-      cardPrice: '.ad-price, .price, [itemprop="price"]',
-      cardUrl: 'a[href*="/anunt"], .ad-title a',
-      cardSeller: '.seller-name, .user-name, [itemprop="seller"] [itemprop="name"]',
-      cardSellerUrl: 'a[href*="/user/"], a[href*="/profil/"]',
-      detailTitle: 'h1.ad-title, h1[itemprop="name"], h1',
-      detailPrice: '.ad-price, [itemprop="price"]',
-      detailSellerName: '.seller-name, .user-name, [itemprop="seller"] [itemprop="name"]',
-      detailSellerUrl: 'a[href*="/user/"], a[href*="/profil/"]',
-      detailPhoneBtn: '.show-phone, .phone-btn, [data-action="show-phone"], button[class*="phone" i]',
-      detailPhone: '.phone-number, [itemprop="telephone"], a[href^="tel:"]',
+      cardUrl: 'a[href*="/anunt/"]',
     },
   };
+
+  /* ---------- GENERIC DETAIL-PAGE EXTRACTORS (both sites) ---- */
+  const PRICE_RE = /(\d[\d.,]{1,9})\s?(RON|LEI|EUR|€|\$|USD)/i;
+  const PHONE_LABEL_RE = /arat[ăa]\s*(telefon|num[ăa]rul)|vezi\s*(telefon|num[ăa]rul)|afi[șş]eaz[ăa]\s*(telefon|num[ăa]rul)|show\s*phone/i;
+  const PHONE_RE = /(\+?4?0)[\s.-]?\d{2,3}[\s.-]?\d{3}[\s.-]?\d{3,4}/;
+  const SELLER_HREF_RE = /\/public-user-profile-|^\/o\/|\/o\/anunturi-de-la\/|\/profil\/|\/user\/|\/seller\//;
+
+  function extractTitle() {
+    const h1 = document.querySelector('h1');
+    if (h1 && clean(h1.innerText)) return clean(h1.innerText);
+    return clean(document.title).replace(/\s*[-|].*$/, '');
+  }
+
+  function extractPrice() {
+    const h1 = document.querySelector('h1');
+    let scope = h1?.parentElement;
+    for (let i = 0; i < 5 && scope; i++) {
+      const m = (scope.innerText || '').match(PRICE_RE);
+      if (m) return clean(m[0]);
+      scope = scope.parentElement;
+    }
+    const m2 = (document.body.innerText || '').match(PRICE_RE);
+    return m2 ? clean(m2[0]) : '';
+  }
+
+  function extractSeller() {
+    const anchors = Array.from(document.querySelectorAll('a[href]'));
+    const a = anchors.find((el) => SELLER_HREF_RE.test(el.getAttribute('href') || '') && clean(el.innerText));
+    return a ? { sellerName: clean(a.innerText), sellerUrl: a.href } : { sellerName: '', sellerUrl: '' };
+  }
+
+  function findPhoneButton() {
+    const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+    return candidates.find((el) => PHONE_LABEL_RE.test(clean(el.innerText)));
+  }
+
+  async function extractPhone() {
+    const btn = findPhoneButton();
+    if (!btn) {
+      log('no phone-reveal button found by label text (may already be shown, or the label text changed)');
+      return '';
+    }
+    const before = clean(btn.innerText);
+    btn.click();
+    await sleep(1200);
+
+    const telLink = document.querySelector('a[href^="tel:"]');
+    if (telLink) return clean(telLink.getAttribute('href').replace('tel:', ''));
+
+    const after = clean(btn.innerText);
+    if (after !== before) {
+      const m = after.match(PHONE_RE);
+      if (m) return clean(m[0]);
+    }
+
+    const scope = btn.closest('div, section, article') || document.body;
+    const m2 = (scope.innerText || '').match(PHONE_RE);
+    if (m2) return clean(m2[0]);
+
+    warn('phone button clicked but no number appeared — the site likely requires you to be logged in to reveal it (see README)');
+    return '';
+  }
 
   function getSite() {
     const h = location.hostname;
@@ -116,7 +162,14 @@
         onload: (r) => {
           log('POST response', r.status, r.responseText);
           try { resolve(JSON.parse(r.responseText)); }
-          catch { resolve({ ok: r.status >= 200 && r.status < 300, error: 'parse' }); }
+          catch {
+            // Apps Script didn't return JSON — surface what it DID return so
+            // this is diagnosable instead of a bare "parse" error. Common
+            // causes: Web App not deployed with "Anyone" access, or it
+            // returned an HTML error/login page instead of your script's output.
+            const snippet = clean(r.responseText).slice(0, 160);
+            resolve({ ok: false, error: `non-JSON response (status ${r.status}): ${snippet || '(empty body)'}` });
+          }
         },
         onerror: (e) => reject(new Error('network error — check @connect and Web App deployment ("Anyone" access)')),
         ontimeout: () => reject(new Error('timeout')),
@@ -126,50 +179,43 @@
 
   /* ============================================================
    * EXTRACTION
+   * Each field is wrapped so one failing step (e.g. the phone
+   * click) can't blank out fields already successfully read.
    * ==========================================================*/
-  function extractFromCard(card, sel) {
-    const titleEl = q(card, sel.cardTitle);
-    const priceEl = q(card, sel.cardPrice);
-    const urlEl = q(card, sel.cardUrl);
-    const sellerEl = q(card, sel.cardSeller);
-    const sellerUrlEl = q(card, sel.cardSellerUrl);
+  function safe(fn, fallback) {
+    try { return fn(); } catch (e) { warn('extractor failed:', e.message); return fallback; }
+  }
+
+  function extractFromCard(card, site) {
+    const urlEl = q(card, site.cardUrl);
+    const h = card.querySelector('h2, h3, h4, a');
+    const title = clean(h?.innerText);
+    const priceMatch = (card.innerText || '').match(PRICE_RE);
     return {
-      title: clean(titleEl?.innerText),
-      price: clean(priceEl?.innerText || priceEl?.getAttribute('content')),
+      title,
+      price: priceMatch ? clean(priceMatch[0]) : '',
       url: urlEl?.href || '',
-      sellerName: clean(sellerEl?.innerText),
-      sellerUrl: sellerUrlEl?.href || '',
+      sellerName: '',
+      sellerUrl: '',
       phone: '', // phones are never on listing cards, only on detail pages
     };
   }
 
-  async function extractDetailPage(sel) {
+  async function extractDetailPage() {
     await sleep(800);
 
-    const titleEl = q(document, sel.detailTitle);
-    const priceEl = q(document, sel.detailPrice);
-    const title = clean(titleEl?.innerText);
-    const price = clean(priceEl?.innerText || priceEl?.getAttribute('content'));
+    const title = safe(() => extractTitle(), '');
+    const price = safe(() => extractPrice(), '');
     const negotiable = /negociabil/i.test(price);
+    const { sellerName, sellerUrl } = safe(() => extractSeller(), { sellerName: '', sellerUrl: '' });
 
-    const sellerNameEl = q(document, sel.detailSellerName);
-    const sellerName = clean(sellerNameEl?.innerText);
-    const sellerUrl = sellerNameEl?.closest('a')?.href || q(document, sel.detailSellerUrl)?.href || '';
-
-    if (!title) warn('detailTitle selector matched nothing — update sel.detailTitle');
-    if (!price) warn('detailPrice selector matched nothing — update sel.detailPrice');
+    if (!title) warn('title extraction found nothing — check that this page has an <h1>');
+    if (!price) warn('price extraction found nothing near the title — currency pattern may not match (see PRICE_RE)');
+    if (!sellerName) warn('seller extraction found nothing — no link matched known profile-URL patterns (see SELLER_HREF_RE)');
 
     let phone = '';
-    const phoneBtn = q(document, sel.detailPhoneBtn);
-    if (phoneBtn) {
-      phoneBtn.click();
-      await sleep(1200);
-      const phoneEl = q(document, sel.detailPhone);
-      phone = clean(phoneEl?.innerText || phoneEl?.getAttribute('href')?.replace('tel:', ''));
-      if (!phone) warn('phone button clicked but no phone number found — update sel.detailPhone, or you may need to be logged in');
-    } else {
-      log('no phone-reveal button found on this page (may already be shown, or selector needs updating)');
-    }
+    try { phone = await extractPhone(); }
+    catch (e) { warn('phone extraction threw:', e.message); }
 
     return { title, price, negotiable, sellerName, sellerUrl, phone };
   }
@@ -247,7 +293,7 @@
         });
 
         await sleep(1000);
-        const detail = await extractDetailPage(site);
+        const detail = await extractDetailPage();
         const res = await sendToSheets({ source: site.name, url: urls[i], ...detail });
         res.ok ? success++ : failed++;
         tab.close();
@@ -274,10 +320,10 @@
     btn.disabled = true;
 
     try {
-      const detail = await extractDetailPage(site);
+      const detail = await extractDetailPage();
       const res = await sendToSheets({ source: site.name, url: location.href, ...detail });
       if (res.ok) {
-        notify('Saved', `${site.name}: "${detail.title.substring(0, 40)}"`);
+        notify('Saved', `${site.name}: "${(detail.title || '(no title)').substring(0, 40)}"`);
         btn.innerText = '✅ Saved!';
       } else {
         throw new Error(res.error || 'Web App returned an error');
