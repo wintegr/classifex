@@ -65,8 +65,9 @@
       descLabel: 'Descriere',
       dateSel: '[data-cy="ad-posted-at"], [data-testid="ad-posted-at"]',
       datePrefix: /^postat\s*/i,
+      dateParse: parseRoDate,
       idRegex: /\bID:\s*(\d+)/i,
-      viewsSel: null, // OLX doesn't show a public view count on ad pages
+      viewsSel: '[data-testid="page-view-counter"]',
       sellerNameSel: '[data-testid="user-profile-user-name"]',
       sellerUrlSel: '[data-testid="user-profile-link"]',
       phoneRevealedSel: 'a[data-testid="contact-phone"], a[href^="tel:"]',
@@ -85,6 +86,7 @@
       descLabel: 'Descriere',
       dateSel: null, // no stable selector — found by scanning for the "Valabil din" prefix instead
       datePrefix: /^valabil din\s*/i,
+      dateParse: parseUsDateTime,
       idRegex: /\bID anun[țt]\s*:?\s*(\d+)/i,
       viewsSel: '.article-views-count',
       sellerNameSel: '.user-profile-name a',
@@ -95,7 +97,41 @@
     },
   };
 
-  /* ---------- SHARED HELPERS ---------------------------------- */
+  /* ---------- DATE NORMALIZATION -------------------------------
+   * OLX gives Romanian-format dates ("22 septembrie 2026"), Publi24
+   * gives US-format date+time ("9/3/2026 11:42:57 AM"). Both get
+   * parsed into ISO 8601 rather than just having their prefix
+   * stripped — date-only for OLX (no time given), date+time for
+   * Publi24 (local wall-clock time, no timezone suffix since the
+   * site doesn't expose one).
+   * ==========================================================*/
+  const RO_MONTHS = {
+    ianuarie: 1, februarie: 2, martie: 3, aprilie: 4, mai: 5, iunie: 6,
+    iulie: 7, august: 8, septembrie: 9, octombrie: 10, noiembrie: 11, decembrie: 12,
+  };
+  const pad = (n) => String(n).padStart(2, '0');
+
+  // "22 septembrie 2026" -> "2026-09-22"
+  function parseRoDate(text) {
+    const m = clean(text).match(/(\d{1,2})\s+([a-zăâîșț]+)\s+(\d{4})/i);
+    if (!m) return '';
+    const month = RO_MONTHS[m[2].toLowerCase()];
+    if (!month) return '';
+    return `${m[3]}-${pad(month)}-${pad(m[1])}`;
+  }
+
+  // "9/3/2026 11:42:57 AM" -> "2026-09-03T11:42:57"
+  function parseUsDateTime(text) {
+    const m = clean(text).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)/i);
+    if (!m) return '';
+    let [, mo, da, yr, hh, mi, ss, ap] = m;
+    hh = parseInt(hh, 10);
+    if (/pm/i.test(ap) && hh !== 12) hh += 12;
+    if (/am/i.test(ap) && hh === 12) hh = 0;
+    return `${yr}-${pad(mo)}-${pad(da)}T${pad(hh)}:${pad(mi)}:${pad(ss)}`;
+  }
+
+
   const PRICE_RE = /(\d[\d.,]{1,9})\s?(RON|LEI|EUR|€|\$|USD)/i;
   const PHONE_LABEL_RE = /arat[ăa]\s*(telefon|num[ăa]rul)|vezi\s*(telefon|num[ăa]rul)|afi[șş]eaz[ăa]\s*(telefon|num[ăa]rul)|show\s*phone/i;
   const PHONE_RE = /(\+?4?0)[\s.-]?\d{2,3}[\s.-]?\d{3}[\s.-]?\d{3,4}/;
@@ -142,17 +178,23 @@
   }
 
   function extractDatePosted(site) {
+    let raw = '';
     if (site.dateSel) {
       const el = q(document, site.dateSel);
-      if (el) return clean(el.innerText).replace(site.datePrefix, '');
+      if (el) raw = clean(el.innerText).replace(site.datePrefix, '');
     }
-    // Fallback: scan short elements for the known prefix text (handles Publi24,
-    // which has no stable selector for this field).
-    for (const el of document.querySelectorAll('i, span, div')) {
-      const t = clean(el.innerText || el.textContent);
-      if (t.length < 80 && site.datePrefix.test(t)) return t.replace(site.datePrefix, '');
+    if (!raw) {
+      // Fallback: scan short elements for the known prefix text (handles
+      // Publi24, which has no stable selector for this field).
+      for (const el of document.querySelectorAll('i, span, div')) {
+        const t = clean(el.innerText || el.textContent);
+        if (t.length < 80 && site.datePrefix.test(t)) { raw = t.replace(site.datePrefix, ''); break; }
+      }
     }
-    return '';
+    if (!raw) return '';
+    const iso = site.dateParse ? site.dateParse(raw) : '';
+    if (!iso) warn(`date "${raw}" didn't match the expected format for ${site.name} — saving raw text instead`);
+    return iso || raw;
   }
 
   function extractAdId(site, jsonld) {
