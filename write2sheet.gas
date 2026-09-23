@@ -1,40 +1,54 @@
-      // Google Apps Script - Code.gs
-      const SHEET_ID = 'YOUR_SHEET_ID_HERE';  // Replace with your Sheet ID
-      const SHEET_NAME = 'Listings';
-      function doPost(e) {
-        try {
-          const data = JSON.parse(e.postData.contents);
-          const ss = SpreadsheetApp.openById(SHEET_ID);
-          let sheet = ss.getSheetByName(SHEET_NAME);
+// Google Apps Script - Code.gs
+const SHEET_ID = 'YOUR_SHEET_ID_HERE';  // Replace with your Sheet ID
+const SHEET_NAME = 'Listings';
 
-          if (!sheet) {
-            sheet = ss.insertSheet(SHEET_NAME);
-            // Headers
-            sheet.appendRow([
-              'Date Added', 'Source', 'Item URL', 'Title', 'Price', 'Negotiable',
-              'Seller Name', 'Seller URL', 'Phone', 'Raw Data'
-            ]);
-            sheet.setFrozenRows(1);
-          }
+const HEADERS = [
+  'Date Added', 'Source', 'Item URL', 'Title', 'Price', 'Negotiable',
+  'Description', 'Date Posted', 'Ad ID', 'Views',
+  'Seller Name', 'Seller URL', 'Phone', 'Raw Data'
+];
 
-          sheet.appendRow([
-            new Date(),
-            data.source,
-            data.url,
-            data.title,
-            data.price,
-            data.negotiable ? 'DA' : 'NU',
-            data.sellerName,
-            data.sellerUrl,
-            data.phone,
-            JSON.stringify(data)
-          ]);
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    let sheet = ss.getSheetByName(SHEET_NAME);
 
-          return ContentService.createTextOutput(JSON.stringify({ok: true}))
-            .setMimeType(ContentService.MimeType.JSON);
+    if (!sheet) {
+      sheet = ss.insertSheet(SHEET_NAME);
+      sheet.appendRow(HEADERS);
+      sheet.setFrozenRows(1);
+    } else {
+      // If you already had a sheet from before these columns existed, this
+      // will NOT retroactively insert them into existing rows/headers — it
+      // only appends new rows in the order above. If your sheet's header row
+      // doesn't match HEADERS, either update the header row manually to
+      // match, or delete the sheet once so it gets recreated with the new
+      // headers on the next save.
+    }
 
-        } catch (err) {
-          return ContentService.createTextOutput(JSON.stringify({ok: false, error: err.toString()}))
-            .setMimeType(ContentService.MimeType.JSON);
-        }
-      }
+    sheet.appendRow([
+      new Date(),
+      data.source,
+      data.url,
+      data.title,
+      data.price,
+      data.negotiable ? 'DA' : 'NU',
+      data.description,
+      data.datePosted,
+      data.adId,
+      data.views,
+      data.sellerName,
+      data.sellerUrl,
+      data.phone,
+      JSON.stringify(data)
+    ]);
+
+    return ContentService.createTextOutput(JSON.stringify({ok: true}))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ok: false, error: err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
