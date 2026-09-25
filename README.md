@@ -252,3 +252,7 @@ For Tampermonkey, choose userscript.js for individual results or bulk.js for bul
       @match        *://*.public24.ro/*
 
     Then refresh the page. The detail-page button should appear on listing URLs.
+
+## Updates
+
+bulk.js and userscript.js were deprecated and combined into userscript_c.js, which then became classifex.user.js, which will be the only script to be updated moving forward
