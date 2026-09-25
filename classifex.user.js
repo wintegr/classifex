@@ -7,8 +7,11 @@
 // @match        *://*.publi24.ro/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @grant        GM_download
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
+// @connect      apollo.olxcdn.com
+// @connect      s3.publi24.ro
 // ==/UserScript==
 
 (function () {
@@ -77,6 +80,13 @@
       phoneIsImage: false,
       locationSel: '[aria-label^="Localitate:"]',
       locationExtract: (el) => clean(el.getAttribute('aria-label').replace(/^Localitate:\s*/i, '')),
+      // Gallery is a virtualized swiper — only ~3 slides are ever mounted at
+      // once, so photos are collected by driving the "next" button rather
+      // than querying all slides up front.
+      galleryCountSel: '#gallery-open-button, [aria-label*="Deschide galeria"]',
+      galleryCountRegex: /din\s+(\d+)/i,
+      galleryActiveImgSel: '.swiper-slide-active [data-testid="swiper-image"]',
+      galleryNextSel: '.swiper-button-next',
     },
     publi24: {
       name: 'PUBLI24',
@@ -100,6 +110,10 @@
       phoneIsImage: true, // phone number is delivered as a base64 PNG image, not text — see notes below
       locationSel: '.detail-info .fa-map-marker',
       locationExtract: (el) => clean(el.closest('p')?.innerText || ''),
+      galleryCountSel: '.article-photos.detailViewCountImages, .detailViewCountImages',
+      galleryCountRegex: /\/\s*(\d+)/,
+      galleryMainImgSel: '.detailViewImg',
+      galleryThumbsSel: '.thumbZone.detailthumbs img, .detailthumbs img',
     },
   };
 
@@ -237,52 +251,82 @@
     };
   }
 
-  function findPhoneButton(site) {
-    if (site.phoneButtonSel) {
-      const el = document.querySelector(site.phoneButtonSel);
-      if (el) return el;
+  // Return EVERY plausible reveal-button candidate, not just the first, so
+  // extractPhone can try each in turn if one doesn't pan out.
+  function findPhoneButtonCandidates(site) {
+    const found = [];
+    if (site.phoneButtonSel) found.push(...document.querySelectorAll(site.phoneButtonSel));
+    const generic = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+      .filter((el) => PHONE_LABEL_RE.test(clean(el.innerText)));
+    for (const el of generic) if (!found.includes(el)) found.push(el);
+    return found;
+  }
+
+  function describeEl(el) {
+    if (!el) return '(none)';
+    const id = el.id ? `#${el.id}` : '';
+    const testid = el.getAttribute?.('data-testid') || el.getAttribute?.('data-cy');
+    const cls = el.className ? `.${String(el.className).trim().split(/\s+/).slice(0, 2).join('.')}` : '';
+    return `<${el.tagName?.toLowerCase()}${id}${cls}>${testid ? ` [data-testid="${testid}"]` : ''} "${clean(el.innerText).slice(0, 40)}"`;
+  }
+
+  async function pollFor(fn, timeoutMs = 3000, intervalMs = 300) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const r = fn();
+      if (r) return r;
+      await sleep(intervalMs);
     }
-    const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-    return candidates.find((el) => PHONE_LABEL_RE.test(clean(el.innerText)));
+    return null;
+  }
+
+  function checkRevealed(site) {
+    const revealed = document.querySelector(site.phoneRevealedSel);
+    if (!revealed) return null;
+    const t = clean(revealed.getAttribute('href')?.replace('tel:', '') || revealed.innerText);
+    const m = t.match(PHONE_RE);
+    return m ? clean(m[0]) : null;
   }
 
   async function extractPhone(site) {
     // Check FIRST for an already-revealed number (e.g. if you clicked "show
-    // phone" yourself before saving) — this was the bug last time: the old
-    // code only checked after attempting its own click, so an
-    // already-revealed number was never picked up.
-    const already = document.querySelector(site.phoneRevealedSel);
-    if (already) {
-      const t = clean(already.getAttribute('href')?.replace('tel:', '') || already.innerText);
-      const m = t.match(PHONE_RE);
-      if (m) return clean(m[0]);
-    }
+    // phone" yourself before saving) — an already-revealed number should
+    // never require a click at all.
+    const already = checkRevealed(site);
+    if (already) return already;
 
     if (site.phoneIsImage) {
       warn(`${site.name}: phone number is rendered as an image (anti-scraping), not text — it cannot be read from the DOM. Leaving blank.`);
       return '';
     }
 
-    const btn = findPhoneButton(site);
-    if (!btn) {
-      log('no phone-reveal button found (may require login, or the label/selector changed)');
+    const candidates = findPhoneButtonCandidates(site);
+    log(`phone reveal: ${candidates.length} candidate button(s) found:`, candidates.map(describeEl));
+    if (!candidates.length) {
+      log('no phone-reveal button found by selector or label text — the selector/label may have changed; see site.phoneButtonSel');
       return '';
     }
-    btn.click();
-    await sleep(1200);
 
-    const revealed = document.querySelector(site.phoneRevealedSel);
-    if (revealed) {
-      const t = clean(revealed.getAttribute('href')?.replace('tel:', '') || revealed.innerText);
-      const m = t.match(PHONE_RE);
-      if (m) return clean(m[0]);
+    for (const btn of candidates) {
+      log('clicking phone candidate:', describeEl(btn));
+      btn.click();
+
+      // Poll rather than a single fixed wait — the reveal may be an async
+      // request that takes longer than expected.
+      const revealed = await pollFor(() => checkRevealed(site), 3000);
+      if (revealed) return revealed;
+
+      const scope = btn.closest('div, section, article') || document.body;
+      const nearby = await pollFor(() => {
+        const m = (scope.innerText || '').match(PHONE_RE);
+        return m ? clean(m[0]) : null;
+      }, 1000);
+      if (nearby) return nearby;
+
+      log('no number appeared after clicking that candidate, trying next one if any');
     }
 
-    const scope = btn.closest('div, section, article') || document.body;
-    const m2 = (scope.innerText || '').match(PHONE_RE);
-    if (m2) return clean(m2[0]);
-
-    warn('phone button clicked but no number appeared — you may need to be logged in to reveal it');
+    warn(`clicked ${candidates.length} candidate(s) but no phone number appeared in the DOM afterward — this could mean the site requires login (even if you believe you're logged in, check the button/page for a login prompt), the click needs a second confirmation step, or the reveal selector is wrong. Run this again with DEBUG=true and check the "phone reveal" log lines above — if you can share the exact HTML of the reveal button before you click it, I can target it precisely instead of guessing.`);
     return '';
   }
 
@@ -292,6 +336,125 @@
       if (SITES[key].test(h)) return SITES[key];
     }
     return null;
+  }
+
+  /* ============================================================
+   * PHOTO GALLERY EXTRACTION & DOWNLOAD
+   * ==========================================================*/
+  function galleryTotal(site) {
+    const el = site.galleryCountSel ? document.querySelector(site.galleryCountSel) : null;
+    if (!el) return 0;
+    const text = el.getAttribute('aria-label') || el.innerText || '';
+    const m = clean(text).match(site.galleryCountRegex);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+
+  // Pick the highest-resolution URL out of an <img>'s srcset attribute
+  // (e.g. "...s=389x272 420w, ...s=1000x700 992w" -> the 992w one).
+  function largestFromSrcset(srcset) {
+    if (!srcset) return '';
+    const candidates = srcset.split(',').map((s) => {
+      const [url, size] = clean(s).split(/\s+/);
+      return { url, w: size ? parseInt(size, 10) || 0 : 0 };
+    });
+    candidates.sort((a, b) => b.w - a.w);
+    return candidates[0]?.url || '';
+  }
+
+  async function collectOlxPhotos(site) {
+    const total = galleryTotal(site);
+    const urls = [];
+    const seen = new Set();
+    const nextBtn = document.querySelector(site.galleryNextSel);
+    const maxSteps = total || 20; // safety cap if the count couldn't be read
+
+    for (let i = 0; i < maxSteps; i++) {
+      const img = document.querySelector(site.galleryActiveImgSel);
+      const url = largestFromSrcset(img?.getAttribute('srcset')) || img?.src;
+      if (url && !seen.has(url)) { seen.add(url); urls.push(url); }
+      if (total && urls.length >= total) break;
+      if (!nextBtn || nextBtn.disabled || nextBtn.classList.contains('swiper-button-disabled')) break;
+      nextBtn.click();
+      await sleep(600); // slide transition + lazy-load
+    }
+    if (total && urls.length < total) {
+      warn(`OLX: collected ${urls.length} of ${total} photos — gallery navigation may have stalled partway through`);
+    }
+    return urls;
+  }
+
+  async function collectPubli24Photos(site) {
+    const total = galleryTotal(site);
+    const urls = [];
+    const seen = new Set();
+    const mainImg = document.querySelector(site.galleryMainImgSel);
+
+    if (mainImg && typeof window.GoToPicture === 'function' && total) {
+      for (let i = 0; i < total; i++) {
+        window.GoToPicture(i);
+        await sleep(400);
+        const src = document.querySelector(site.galleryMainImgSel)?.src;
+        if (src && !seen.has(src)) { seen.add(src); urls.push(src); }
+      }
+    } else {
+      // Fallback: thumbnail strip. These may be lower-resolution than the
+      // full-size view — used only if GoToPicture isn't available.
+      document.querySelectorAll(site.galleryThumbsSel).forEach((img) => {
+        if (img.src && !seen.has(img.src)) { seen.add(img.src); urls.push(img.src); }
+      });
+      if (urls.length) warn('PUBLI24: used thumbnail images as a fallback — these may be lower resolution than the full-size photos');
+    }
+    if (total && urls.length < total) {
+      warn(`PUBLI24: collected ${urls.length} of ${total} photos`);
+    }
+    return urls;
+  }
+
+  function extFromUrl(url) {
+    const m = url.split('?')[0].match(/\.(jpg|jpeg|png|webp|gif)$/i);
+    return m ? m[1].toLowerCase() : 'jpg';
+  }
+
+  async function handleDownloadPhotos() {
+    const site = getSite();
+    if (!site) return;
+    const btn = document.getElementById('cfx-photos-btn');
+    const orig = btn.innerText;
+    btn.innerText = '🔍 Finding photos...';
+    btn.disabled = true;
+
+    try {
+      const urls = site.name === 'OLX' ? await collectOlxPhotos(site) : await collectPubli24Photos(site);
+      if (!urls.length) {
+        notify('Photos', 'No photos found — gallery selectors may need updating (see console)', 'error');
+        btn.innerText = orig;
+        btn.disabled = false;
+        return;
+      }
+
+      const jsonld = safe(() => getJsonLd(), null);
+      const adId = safe(() => extractAdId(site, jsonld), '') || Date.now();
+
+      for (let i = 0; i < urls.length; i++) {
+        btn.innerText = `⬇️ ${i + 1}/${urls.length}`;
+        const ext = extFromUrl(urls[i]);
+        GM_download({
+          url: urls[i],
+          name: `${site.name}_${adId}_${i + 1}.${ext}`,
+          onerror: (e) => warn('download failed for', urls[i], e),
+        });
+        await sleep(400); // stagger requests / downloads
+      }
+      notify('Photos', `${site.name}: ${urls.length} photo(s) sent to your downloads`);
+      btn.innerText = `✅ ${urls.length} saved`;
+    } catch (e) {
+      warn('photo download failed:', e.message);
+      notify('Photos', e.message, 'error');
+      btn.innerText = '❌ Failed';
+    }
+    await sleep(2500);
+    btn.innerText = orig;
+    btn.disabled = false;
   }
 
   /* ============================================================
@@ -526,6 +689,9 @@
       createButton('cfx-single-btn', '📊 Save to Sheets', handleSingleSave, {
         bottom: '20px', right: '20px', background: '#1a73e8', color: '#fff',
       });
+      createButton('cfx-photos-btn', '📷 Download Photos', handleDownloadPhotos, {
+        bottom: '70px', right: '20px', background: '#9334e6', color: '#fff',
+      });
     } else {
       createButton('cfx-bulk-btn', `📦 Bulk Export (${site.name})`, bulkExport, {
         bottom: '20px', right: '20px', background: '#34a853', color: '#fff',
@@ -537,7 +703,7 @@
   }
 
   function removeButtons() {
-    ['cfx-single-btn', 'cfx-bulk-btn', 'cfx-deep-btn'].forEach((id) => document.getElementById(id)?.remove());
+    ['cfx-single-btn', 'cfx-photos-btn', 'cfx-bulk-btn', 'cfx-deep-btn'].forEach((id) => document.getElementById(id)?.remove());
   }
 
   /* ============================================================
