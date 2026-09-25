@@ -4,9 +4,18 @@ const SHEET_NAME = 'Listings';
 
 const HEADERS = [
   'Date Added', 'Source', 'Item URL', 'Title', 'Price', 'Negotiable',
-  'Description', 'Date Posted', 'Ad ID', 'Views',
-  'Seller Name', 'Seller URL', 'Phone', 'Raw Data'
+  'Description', 'Date Posted', 'Time Posted', 'Ad ID', 'Views', 'Location',
+  'Seller Name', 'Seller URL', 'Phone'
 ];
+
+// Builds a Sheets =HYPERLINK(...) formula. If url is empty, falls back to
+// plain text so you never get a broken/empty-target hyperlink cell.
+function hyperlinkFormula(url, label) {
+  const safeLabel = (label || '').replace(/"/g, '""');
+  const safeUrl = (url || '').replace(/"/g, '""');
+  if (!safeUrl) return label || '';
+  return '=HYPERLINK("' + safeUrl + '","' + safeLabel + '")';
+}
 
 function doPost(e) {
   try {
@@ -29,19 +38,22 @@ function doPost(e) {
 
     sheet.appendRow([
       new Date(),
-      data.source,
-      data.url,
+      hyperlinkFormula(data.url, data.source),        // Source -> links to Item URL (next cell)
+      data.url,                                        // Item URL
       data.title,
       data.price,
       data.negotiable ? 'DA' : 'NU',
       data.description,
       data.datePosted,
+      data.timePosted,
       data.adId,
       data.views,
-      data.sellerName,
-      data.sellerUrl,
-      data.phone,
-      JSON.stringify(data)
+      data.location,
+      hyperlinkFormula(data.sellerUrl, data.sellerName), // Seller Name -> links to Seller URL (next cell)
+      data.sellerUrl,                                    // Seller URL
+      data.phone
+      // Note: the full raw payload is no longer written to a "Raw Data"
+      // column — only the fields above are stored.
     ]);
 
     return ContentService.createTextOutput(JSON.stringify({ok: true}))

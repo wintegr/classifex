@@ -68,11 +68,15 @@
       dateParse: parseRoDate,
       idRegex: /\bID:\s*(\d+)/i,
       viewsSel: '[data-testid="page-view-counter"]',
-      sellerNameSel: '[data-testid="user-profile-user-name"]',
+      // Full seller block (name + rating + "Pe OLX din..." + "Activ..."), not
+      // just the bare name — same element also gives us the profile URL.
+      sellerNameSel: '[data-testid="user-profile-link"]',
       sellerUrlSel: '[data-testid="user-profile-link"]',
       phoneRevealedSel: 'a[data-testid="contact-phone"], a[href^="tel:"]',
       phoneButtonSel: '[data-testid*="phone" i] button, button[data-testid*="phone" i]',
       phoneIsImage: false,
+      locationSel: '[aria-label^="Localitate:"]',
+      locationExtract: (el) => clean(el.getAttribute('aria-label').replace(/^Localitate:\s*/i, '')),
     },
     publi24: {
       name: 'PUBLI24',
@@ -94,6 +98,8 @@
       phoneRevealedSel: 'a[href^="tel:"]', // Publi24 never renders a real tel: link — see phoneIsImage
       phoneButtonSel: '.btn-show-phone, .show-phone-number button',
       phoneIsImage: true, // phone number is delivered as a base64 PNG image, not text — see notes below
+      locationSel: '.detail-info .fa-map-marker',
+      locationExtract: (el) => clean(el.closest('p')?.innerText || ''),
     },
   };
 
@@ -191,10 +197,16 @@
         if (t.length < 80 && site.datePrefix.test(t)) { raw = t.replace(site.datePrefix, ''); break; }
       }
     }
-    if (!raw) return '';
+    if (!raw) return { date: '', time: '' };
     const iso = site.dateParse ? site.dateParse(raw) : '';
-    if (!iso) warn(`date "${raw}" didn't match the expected format for ${site.name} — saving raw text instead`);
-    return iso || raw;
+    if (!iso) {
+      warn(`date "${raw}" didn't match the expected format for ${site.name} — saving raw text instead`);
+      return { date: raw, time: '' };
+    }
+    // Split "YYYY-MM-DDTHH:MM:SS" (Publi24) into separate date/time fields.
+    // OLX's parseRoDate never produces a "T", so time stays empty there.
+    const [date, time] = iso.split('T');
+    return { date, time: time || '' };
   }
 
   function extractAdId(site, jsonld) {
@@ -208,6 +220,12 @@
     const el = document.querySelector(site.viewsSel);
     const m = (el?.innerText || '').match(/(\d+)/);
     return m ? m[1] : '';
+  }
+
+  function extractLocation(site) {
+    if (!site.locationSel || !site.locationExtract) return '';
+    const el = document.querySelector(site.locationSel);
+    return el ? site.locationExtract(el) : '';
   }
 
   function extractSeller(site) {
@@ -340,9 +358,10 @@
     const price = safe(() => extractPrice(site, jsonld), '');
     const negotiable = /negociabil/i.test(price);
     const description = safe(() => extractDescription(site, jsonld), '');
-    const datePosted = safe(() => extractDatePosted(site), '');
+    const { date: datePosted, time: timePosted } = safe(() => extractDatePosted(site), { date: '', time: '' });
     const adId = safe(() => extractAdId(site, jsonld), '');
     const views = safe(() => extractViews(site), '');
+    const location = safe(() => extractLocation(site), '');
     const { sellerName, sellerUrl } = safe(() => extractSeller(site), { sellerName: '', sellerUrl: '' });
 
     if (!title) warn('title extraction found nothing');
@@ -350,12 +369,13 @@
     if (!sellerName) warn(`seller extraction found nothing — check site.sellerNameSel (${site.sellerNameSel})`);
     if (!datePosted) warn('date-posted extraction found nothing');
     if (!adId) warn('ad ID extraction found nothing');
+    if (!location) warn(`location extraction found nothing — check site.locationSel (${site.locationSel})`);
 
     let phone = '';
     try { phone = await extractPhone(site); }
     catch (e) { warn('phone extraction threw:', e.message); }
 
-    return { title, price, negotiable, description, datePosted, adId, views, sellerName, sellerUrl, phone };
+    return { title, price, negotiable, description, datePosted, timePosted, adId, views, location, sellerName, sellerUrl, phone };
   }
 
   /* ============================================================
