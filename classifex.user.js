@@ -229,11 +229,19 @@
     return m ? m[1] : '';
   }
 
-  function extractViews(site) {
+  // Both sites' view counters are populated by a separate async call after
+  // the initial page render (confirmed for OLX; Publi24's view-count block
+  // carries a "partialContents" class suggesting the same), so this polls
+  // for a few seconds instead of reading once immediately — a flat 800ms
+  // page-settle wait isn't reliably enough for it to have arrived yet.
+  async function extractViews(site) {
     if (!site.viewsSel) return '';
-    const el = document.querySelector(site.viewsSel);
-    const m = (el?.innerText || '').match(/(\d+)/);
-    return m ? m[1] : '';
+    const result = await pollFor(() => {
+      const el = document.querySelector(site.viewsSel);
+      const m = (el?.innerText || '').match(/(\d+)/);
+      return m ? m[1] : null;
+    }, 4000, 300);
+    return result || '';
   }
 
   function extractLocation(site) {
@@ -280,6 +288,44 @@
     return null;
   }
 
+  // Publi24's revealed phone number is a background-image data URI on
+  // <span class="telnumber">, e.g. style="background-image:url('data:image/png;base64,...')".
+  function getTelnumberDataUri() {
+    const span = document.querySelector('.telnumber');
+    if (!span) return null;
+    const style = span.getAttribute('style') || '';
+    const m = style.match(/url\((?:"|')?(data:image\/[^"')]+)(?:"|')?\)/i);
+    return m ? m[1] : null;
+  }
+
+  // Clicks Publi24's "Arată telefon" button (real markup: button.btn-show-phone
+  // inside .show-phone-number, POSTs to /DetailAd/PhoneNumberImages via AJAX)
+  // and waits for the resulting image to appear. Returns the data URI, or
+  // null if there's nothing to click or the reveal times out.
+  async function revealPubli24PhoneImage() {
+    let dataUri = getTelnumberDataUri();
+    if (dataUri) return dataUri;
+
+    const btn = document.querySelector('.btn-show-phone, .show-phone-number button');
+    if (!btn) {
+      log('PUBLI24: no phone-reveal button found to click');
+      return null;
+    }
+    log('PUBLI24: clicking phone-reveal button (image-based number — will be downloaded as an image, not read as text)');
+    btn.click();
+    return await pollFor(() => getTelnumberDataUri(), 3000, 300);
+  }
+
+  // Decodes a data: URI into a Blob and returns an object URL GM_download can fetch.
+  function dataUriToBlobUrl(dataUri) {
+    const [meta, b64] = dataUri.split(',');
+    const mime = (meta.match(/data:(.*?);base64/) || [, 'image/png'])[1];
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  }
+
   function checkRevealed(site) {
     const revealed = document.querySelector(site.phoneRevealedSel);
     if (!revealed) return null;
@@ -296,7 +342,12 @@
     if (already) return already;
 
     if (site.phoneIsImage) {
-      warn(`${site.name}: phone number is rendered as an image (anti-scraping), not text — it cannot be read from the DOM. Leaving blank.`);
+      const dataUri = await revealPubli24PhoneImage();
+      if (dataUri) {
+        warn(`${site.name}: phone revealed, but it's rendered as an image, not text — it can't be saved to this field. Use "Download Photos" to save the image itself.`);
+      } else {
+        warn(`${site.name}: could not reveal the phone image — button not found, or the reveal timed out.`);
+      }
       return '';
     }
 
@@ -425,28 +476,43 @@
 
     try {
       const urls = site.name === 'OLX' ? await collectOlxPhotos(site) : await collectPubli24Photos(site);
-      if (!urls.length) {
-        notify('Photos', 'No photos found — gallery selectors may need updating (see console)', 'error');
+
+      const jsonld = safe(() => getJsonLd(), null);
+      const adId = safe(() => extractAdId(site, jsonld), '') || Date.now();
+
+      // Build the download list as {url, name} items rather than bare URLs,
+      // so the Publi24 phone image (a data: URI, not a normal file URL) can
+      // be included alongside the gallery photos with its own filename.
+      const items = urls.map((url, i) => ({ url, name: `${site.name}_${adId}_${i + 1}.${extFromUrl(url)}` }));
+
+      if (site.phoneIsImage) {
+        btn.innerText = '📞 Revealing phone...';
+        const dataUri = await revealPubli24PhoneImage();
+        if (dataUri) {
+          items.push({ url: dataUriToBlobUrl(dataUri), name: `${site.name}_${adId}_phone.png` });
+        } else {
+          log('PUBLI24: phone image not available to include in the download (no reveal button found, or it timed out)');
+        }
+      }
+
+      if (!items.length) {
+        notify('Photos', 'Nothing found to download — gallery/phone selectors may need updating (see console)', 'error');
         btn.innerText = orig;
         btn.disabled = false;
         return;
       }
 
-      const jsonld = safe(() => getJsonLd(), null);
-      const adId = safe(() => extractAdId(site, jsonld), '') || Date.now();
-
-      for (let i = 0; i < urls.length; i++) {
-        btn.innerText = `⬇️ ${i + 1}/${urls.length}`;
-        const ext = extFromUrl(urls[i]);
+      for (let i = 0; i < items.length; i++) {
+        btn.innerText = `⬇️ ${i + 1}/${items.length}`;
         GM_download({
-          url: urls[i],
-          name: `${site.name}_${adId}_${i + 1}.${ext}`,
-          onerror: (e) => warn('download failed for', urls[i], e),
+          url: items[i].url,
+          name: items[i].name,
+          onerror: (e) => warn('download failed for', items[i].name, e),
         });
         await sleep(400); // stagger requests / downloads
       }
-      notify('Photos', `${site.name}: ${urls.length} photo(s) sent to your downloads`);
-      btn.innerText = `✅ ${urls.length} saved`;
+      notify('Photos', `${site.name}: ${items.length} file(s) sent to your downloads`);
+      btn.innerText = `✅ ${items.length} saved`;
     } catch (e) {
       warn('photo download failed:', e.message);
       notify('Photos', e.message, 'error');
@@ -498,6 +564,10 @@
     try { return fn(); } catch (e) { warn('extractor failed:', e.message); return fallback; }
   }
 
+  async function asyncSafe(fn, fallback) {
+    try { return await fn(); } catch (e) { warn('extractor failed:', e.message); return fallback; }
+  }
+
   function extractFromCard(card, site) {
     const urlEl = q(card, site.cardUrl);
     const h = card.querySelector('h2, h3, h4, a');
@@ -523,7 +593,7 @@
     const description = safe(() => extractDescription(site, jsonld), '');
     const { date: datePosted, time: timePosted } = safe(() => extractDatePosted(site), { date: '', time: '' });
     const adId = safe(() => extractAdId(site, jsonld), '');
-    const views = safe(() => extractViews(site), '');
+    const views = await asyncSafe(() => extractViews(site), '');
     const location = safe(() => extractLocation(site), '');
     const { sellerName, sellerUrl } = safe(() => extractSeller(site), { sellerName: '', sellerUrl: '' });
 
