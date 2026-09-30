@@ -80,6 +80,10 @@
       phoneIsImage: false,
       locationSel: '[aria-label^="Localitate:"]',
       locationExtract: (el) => clean(el.getAttribute('aria-label').replace(/^Localitate:\s*/i, '')),
+      // Breadcrumb trail, e.g. "Pagina principală > Electronice... > Telefoane > iPhone > iPhone - Iasi"
+      // — skip the first ("Pagina principală" / home link), keep the rest.
+      categorySel: '[data-testid="breadcrumbs"] [data-testid="breadcrumb-item"] a',
+      categorySkip: 1,
       // Gallery is a virtualized swiper — only ~3 slides are ever mounted at
       // once, so photos are collected by driving the "next" button rather
       // than querying all slides up front.
@@ -110,6 +114,10 @@
       phoneIsImage: true, // phone number is delivered as a base64 PNG image, not text — see notes below
       locationSel: '.detail-info .fa-map-marker',
       locationExtract: (el) => clean(el.closest('p')?.innerText || ''),
+      // schema.org BreadcrumbList: "Publi24 > Anunțuri > Electronice > Telefoane mobile"
+      // — skip the first two generic entries (site name, "Anunțuri" = "Listings").
+      categorySel: 'ul.breadcrumbs [itemprop="name"]',
+      categorySkip: 2,
       galleryCountSel: '.article-photos.detailViewCountImages, .detailViewCountImages',
       galleryCountRegex: /\/\s*(\d+)/,
       galleryMainImgSel: '.detailViewImg',
@@ -248,6 +256,25 @@
     if (!site.locationSel || !site.locationExtract) return '';
     const el = document.querySelector(site.locationSel);
     return el ? site.locationExtract(el) : '';
+  }
+
+  function extractCategory(site, location) {
+    if (!site.categorySel) return '';
+    const items = Array.from(document.querySelectorAll(site.categorySel))
+      .map((el) => clean(el.innerText))
+      .filter(Boolean)
+      .slice(site.categorySkip || 0);
+
+    // OLX's last breadcrumb item is sometimes "Category - City" (e.g.
+    // "iPhone - Iasi") when the category page is location-filtered — strip
+    // that suffix since the city is already in its own Location field.
+    if (location && items.length) {
+      const last = items[items.length - 1];
+      const suffix = ` - ${location}`;
+      if (last.endsWith(suffix)) items[items.length - 1] = last.slice(0, -suffix.length).trim();
+    }
+
+    return items.join(' > ');
   }
 
   function extractSeller(site) {
@@ -595,6 +622,7 @@
     const adId = safe(() => extractAdId(site, jsonld), '');
     const views = await asyncSafe(() => extractViews(site), '');
     const location = safe(() => extractLocation(site), '');
+    const category = safe(() => extractCategory(site, location), '');
     const { sellerName, sellerUrl } = safe(() => extractSeller(site), { sellerName: '', sellerUrl: '' });
 
     if (!title) warn('title extraction found nothing');
@@ -608,7 +636,7 @@
     try { phone = await extractPhone(site); }
     catch (e) { warn('phone extraction threw:', e.message); }
 
-    return { title, price, negotiable, description, datePosted, timePosted, adId, views, location, sellerName, sellerUrl, phone };
+    return { title, price, negotiable, description, datePosted, timePosted, adId, views, location, category, sellerName, sellerUrl, phone };
   }
 
   /* ============================================================

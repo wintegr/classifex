@@ -5,7 +5,7 @@ const SHEET_NAME = 'Listings';
 const HEADERS = [
   'Date Added', 'Source', 'Item URL', 'Title', 'Price', 'Negotiable',
   'Description', 'Date Posted', 'Time Posted', 'Ad ID', 'Views', 'Location',
-  'Seller Name', 'Seller URL', 'Phone'
+  'Category', 'Seller Name', 'Seller URL', 'Phone'
 ];
 
 // Builds a Sheets =HYPERLINK(...) formula. If url is empty, falls back to
@@ -14,6 +14,8 @@ function hyperlinkFormula(url, label) {
   const safeLabel = (label || '').replace(/"/g, '""');
   const safeUrl = (url || '').replace(/"/g, '""');
   if (!safeUrl) return label || '';
+  // ";" not "," — your Sheet's locale uses semicolons as the formula
+  // argument separator (common for RO and most European locales).
   return '=HYPERLINK("' + safeUrl + '";"' + safeLabel + '")';
 }
 
@@ -49,6 +51,7 @@ function doPost(e) {
       data.adId,
       data.views,
       data.location,
+      data.category,
       hyperlinkFormula(data.sellerUrl, data.sellerName), // Seller Name -> links to Seller URL (next cell)
       data.sellerUrl,                                    // Seller URL
       data.phone
